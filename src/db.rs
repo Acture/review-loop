@@ -279,23 +279,6 @@ impl Db {
         Ok(out)
     }
 
-    pub fn count_active_submit_poll(&self) -> Result<usize> {
-        let conn = self.connect()?;
-        let count: i64 = conn.query_row(
-            r#"
-            SELECT COUNT(*)
-            FROM jobs
-            WHERE status IN (?1, ?2)
-            "#,
-            params![
-                JobStatus::Submitted.as_str(),
-                JobStatus::Processing.as_str()
-            ],
-            |row| row.get(0),
-        )?;
-        Ok(count as usize)
-    }
-
     pub fn update_job_state(
         &self,
         job_id: &str,

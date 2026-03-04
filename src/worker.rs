@@ -48,13 +48,7 @@ pub async fn run_tick(config: &Config, db: &Db) -> Result<()> {
 }
 
 pub async fn process_submissions(config: &Config, db: &Db) -> Result<()> {
-    let active = db.count_active_submit_poll()?;
-    if active >= config.core.max_concurrency {
-        return Ok(());
-    }
-
-    let capacity = config.core.max_concurrency - active;
-    let jobs = db.list_ready_queued(capacity, Utc::now())?;
+    let jobs = db.list_ready_queued(config.core.max_concurrency, Utc::now())?;
     for job in jobs {
         submit_job(config, db, &job.id).await?;
     }
