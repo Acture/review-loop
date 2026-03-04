@@ -66,10 +66,11 @@ pub fn run_git_tag_trigger(config: &Config, db: &Db) -> Result<()> {
     for tag in tags.lines().map(str::trim).filter(|v| !v.is_empty()) {
         let commit = resolve_tag_commit(repo_dir, tag).unwrap_or_else(|| "unknown".to_string());
         let processed = process_tag_entry(config, db, tag, &commit)?;
-        if processed && config.trigger.git.auto_delete_processed_tags {
-            if let Err(err) = delete_local_tag(repo_dir, tag) {
-                warn!(tag, error = %err, "failed to auto-delete processed git tag");
-            }
+        if processed
+            && config.trigger.git.auto_delete_processed_tags
+            && let Err(err) = delete_local_tag(repo_dir, tag)
+        {
+            warn!(tag, error = %err, "failed to auto-delete processed git tag");
         }
     }
 
@@ -135,12 +136,11 @@ pub fn run_pdf_trigger(config: &Config, db: &Db) -> Result<()> {
 }
 
 fn select_paper<'a>(config: &'a Config, parsed: &ParsedTag) -> Option<&'a PaperConfig> {
-    if let Some(paper_id) = &parsed.paper_id {
-        if let Some(paper) = config.find_paper(paper_id) {
-            if paper.backend == parsed.backend {
-                return Some(paper);
-            }
-        }
+    if let Some(paper_id) = &parsed.paper_id
+        && let Some(paper) = config.find_paper(paper_id)
+        && paper.backend == parsed.backend
+    {
+        return Some(paper);
     }
 
     config.first_paper_for_backend(&parsed.backend)
@@ -168,18 +168,18 @@ fn process_tag_entry(config: &Config, db: &Db, tag: &str, commit: &str) -> Resul
         return Ok(false);
     }
 
-    if let Some(parsed) = parse_review_tag(tag) {
-        if let Some(paper) = select_paper(config, &parsed) {
-            enqueue_for_paper(
-                config,
-                db,
-                paper,
-                JobStatus::Queued,
-                Some(tag.to_string()),
-                Some(commit.to_string()),
-                "git_tag_trigger",
-            )?;
-        }
+    if let Some(parsed) = parse_review_tag(tag)
+        && let Some(paper) = select_paper(config, &parsed)
+    {
+        enqueue_for_paper(
+            config,
+            db,
+            paper,
+            JobStatus::Queued,
+            Some(tag.to_string()),
+            Some(commit.to_string()),
+            "git_tag_trigger",
+        )?;
     }
 
     db.mark_tag_seen(tag, commit)?;

@@ -26,10 +26,10 @@ pub async fn submit_with_node_playwright(
         .arg("--email")
         .arg(email);
 
-    if let Some(venue) = venue {
-        if !venue.trim().is_empty() {
-            cmd.arg("--venue").arg(venue);
-        }
+    if let Some(venue) = venue
+        && !venue.trim().is_empty()
+    {
+        cmd.arg("--venue").arg(venue);
     }
 
     let output = cmd
