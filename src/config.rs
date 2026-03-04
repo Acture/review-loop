@@ -10,6 +10,7 @@ use std::{
 #[serde(default)]
 pub struct Config {
     pub core: CoreConfig,
+    pub logging: LoggingConfig,
     pub polling: PollingConfig,
     pub trigger: TriggerConfig,
     pub providers: ProvidersConfig,
@@ -21,6 +22,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             core: CoreConfig::default(),
+            logging: LoggingConfig::default(),
             polling: PollingConfig::default(),
             trigger: TriggerConfig::default(),
             providers: ProvidersConfig::default(),
@@ -50,6 +52,24 @@ impl Config {
         }
         if self.core.max_submissions_per_tick == 0 {
             return Err(anyhow!("core.max_submissions_per_tick must be >= 1"));
+        }
+        if !matches!(self.logging.output.as_str(), "stdout" | "stderr" | "file") {
+            return Err(anyhow!(
+                "logging.output must be one of: stdout | stderr | file"
+            ));
+        }
+        if self.logging.output == "file"
+            && self
+                .logging
+                .file_path
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
+            return Err(anyhow!(
+                "logging.file_path is required when logging.output = \"file\""
+            ));
         }
         if self.polling.schedule_minutes.is_empty() {
             return Err(anyhow!("polling.schedule_minutes cannot be empty"));
@@ -103,6 +123,24 @@ impl Default for CoreConfig {
             max_concurrency: 2,
             max_submissions_per_tick: 1,
             review_timeout_hours: 48,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub output: String,
+    pub file_path: Option<String>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+            output: "stdout".to_string(),
+            file_path: Some(".reviewloop/reviewloop.log".to_string()),
         }
     }
 }
@@ -265,6 +303,7 @@ mod tests {
         assert_eq!(cfg.trigger.git.repo_dir, ".");
         assert_eq!(cfg.core.max_submissions_per_tick, 1);
         assert_eq!(cfg.trigger.pdf.max_scan_papers, 10);
+        assert_eq!(cfg.logging.output, "stdout");
     }
 
     #[test]
@@ -306,6 +345,21 @@ mod tests {
     fn validate_rejects_zero_pdf_scan_limit() {
         let mut cfg = Config::default();
         cfg.trigger.pdf.max_scan_papers = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_logging_output() {
+        let mut cfg = Config::default();
+        cfg.logging.output = "syslog".to_string();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_requires_file_path_for_file_output() {
+        let mut cfg = Config::default();
+        cfg.logging.output = "file".to_string();
+        cfg.logging.file_path = Some("".to_string());
         assert!(cfg.validate().is_err());
     }
 }
