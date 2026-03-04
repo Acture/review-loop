@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -511,6 +512,25 @@ impl Db {
             params![token, source, to_rfc3339(Utc::now()), raw_ref],
         )?;
         Ok(())
+    }
+
+    pub fn status_counts(&self) -> Result<BTreeMap<String, usize>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT status, COUNT(*) as cnt
+            FROM jobs
+            GROUP BY status
+            "#,
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            let status: String = row.get(0)?;
+            let cnt: i64 = row.get(1)?;
+            out.insert(status, cnt as usize);
+        }
+        Ok(out)
     }
 }
 

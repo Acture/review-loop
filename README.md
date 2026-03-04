@@ -17,6 +17,7 @@ ReviewLoop v1 is a Rust CLI/daemon that automates paper submission and review re
 ```bash
 reviewloop init
 reviewloop daemon run
+reviewloop daemon run --panel false
 reviewloop submit --paper-id main [--force]
 reviewloop approve --job-id <job-id>
 reviewloop import-token --paper-id main --token <token> [--source email]
@@ -48,6 +49,12 @@ Key defaults:
 - `trigger.git.repo_dir = "."`
 - `trigger.pdf.auto_submit_on_change = false`
 - `trigger.pdf.max_scan_papers = 10` (only first N configured papers scanned per tick)
+- `logging.level = "info"`
+- `logging.output = "stdout"` (`stdout` | `stderr` | `file`)
+- `logging.file_path = ".reviewloop/reviewloop.log"` (used when `logging.output = "file"`)
+
+Foreground daemon (`daemon run`) supports a terminal monitor panel by default on TTY.
+If you run daemon in background/service mode, set `logging.output = "file"` to persist logs.
 
 `providers.stanford`:
 

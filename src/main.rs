@@ -7,8 +7,10 @@ use reviewloop::model::{JobStatus, NewJob};
 use reviewloop::util::{compute_next_poll_at, sha256_file};
 use std::{
     fs,
+    io::IsTerminal,
     path::{Path, PathBuf},
 };
+use tracing::warn;
 
 #[derive(Debug, Parser)]
 #[command(name = "reviewloop")]
@@ -63,7 +65,10 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum DaemonCommand {
-    Run,
+    Run {
+        #[arg(long, default_value_t = true)]
+        panel: bool,
+    },
 }
 
 #[tokio::main]
@@ -80,17 +85,21 @@ async fn run() -> Result<()> {
     match cli.command {
         Command::Init { force } => cmd_init(&cli.config, force),
         Command::Daemon {
-            command: DaemonCommand::Run,
+            command: DaemonCommand::Run { panel },
         } => {
-            let (config, db) = load_runtime(&cli.config)?;
-            reviewloop::worker::run_daemon(&config, &db).await
+            let panel_enabled = panel && std::io::stdout().is_terminal();
+            if panel && !panel_enabled {
+                eprintln!("note: panel requested but stdout is not a TTY; running without panel.");
+            }
+            let (config, db) = load_runtime(&cli.config, panel_enabled)?;
+            reviewloop::worker::run_daemon(&config, &db, panel_enabled).await
         }
         Command::Submit { paper_id, force } => {
-            let (config, db) = load_runtime(&cli.config)?;
+            let (config, db) = load_runtime(&cli.config, false)?;
             cmd_submit(&config, &db, &paper_id, force).await
         }
         Command::Approve { job_id } => {
-            let (_config, db) = load_runtime(&cli.config)?;
+            let (_config, db) = load_runtime(&cli.config, false)?;
             cmd_approve(&db, &job_id)
         }
         Command::ImportToken {
@@ -98,15 +107,15 @@ async fn run() -> Result<()> {
             token,
             source,
         } => {
-            let (config, db) = load_runtime(&cli.config)?;
+            let (config, db) = load_runtime(&cli.config, false)?;
             cmd_import_token(&config, &db, &paper_id, &token, &source)
         }
         Command::Status { paper_id, json } => {
-            let (_config, db) = load_runtime(&cli.config)?;
+            let (_config, db) = load_runtime(&cli.config, false)?;
             cmd_status(&db, paper_id.as_deref(), json)
         }
         Command::Retry { job_id } => {
-            let (config, db) = load_runtime(&cli.config)?;
+            let (config, db) = load_runtime(&cli.config, false)?;
             cmd_retry(&config, &db, &job_id)
         }
     }
@@ -135,11 +144,14 @@ fn cmd_init(config_path: &Path, force: bool) -> Result<()> {
         config_path.display(),
         cfg.state_dir().display()
     );
+    println!("\n{}", render_guardrail_notice(&cfg));
     Ok(())
 }
 
-fn load_runtime(config_path: &Path) -> Result<(Config, Db)> {
+fn load_runtime(config_path: &Path, force_stderr_logs: bool) -> Result<(Config, Db)> {
     let config = Config::load(config_path)?;
+    reviewloop::logging::init_logging(&config, force_stderr_logs)?;
+    print_guardrail_warnings(&config);
 
     fs::create_dir_all(config.state_dir()).with_context(|| {
         format!(
@@ -153,6 +165,42 @@ fn load_runtime(config_path: &Path) -> Result<(Config, Db)> {
     db.init_schema()?;
 
     Ok((config, db))
+}
+
+fn render_guardrail_notice(config: &Config) -> String {
+    format!(
+        "Site Load Guardrails (defaults):\n\
+         - core.max_submissions_per_tick = {} (recommended: 1)\n\
+         - core.max_concurrency = {} (recommended: <=2)\n\
+         - trigger.pdf.max_scan_papers = {} (recommended: <=10)\n\
+         - polling.schedule_minutes = {:?} (starts at 10m)\n\
+         These limits help avoid overloading review providers.",
+        config.core.max_submissions_per_tick,
+        config.core.max_concurrency,
+        config.trigger.pdf.max_scan_papers,
+        config.polling.schedule_minutes
+    )
+}
+
+fn print_guardrail_warnings(config: &Config) {
+    if config.core.max_submissions_per_tick > 2 {
+        warn!(
+            "warning: core.max_submissions_per_tick={} is high; consider <=2 to reduce site load.",
+            config.core.max_submissions_per_tick
+        );
+    }
+    if config.core.max_concurrency > 3 {
+        warn!(
+            "warning: core.max_concurrency={} is high; consider <=3 unless provider confirms higher limits.",
+            config.core.max_concurrency
+        );
+    }
+    if config.trigger.pdf.max_scan_papers > 50 {
+        warn!(
+            "warning: trigger.pdf.max_scan_papers={} is high; large scans may generate excessive submit candidates.",
+            config.trigger.pdf.max_scan_papers
+        );
+    }
 }
 
 async fn cmd_submit(config: &Config, db: &Db, paper_id: &str, force: bool) -> Result<()> {
@@ -360,4 +408,19 @@ fn cmd_retry(config: &Config, db: &Db, job_id: &str) -> Result<()> {
     println!("Retry scheduled for job {job_id}");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_guardrail_notice;
+    use reviewloop::config::Config;
+
+    #[test]
+    fn guardrail_notice_mentions_core_limits() {
+        let cfg = Config::default();
+        let notice = render_guardrail_notice(&cfg);
+        assert!(notice.contains("core.max_submissions_per_tick"));
+        assert!(notice.contains("trigger.pdf.max_scan_papers"));
+        assert!(notice.contains("starts at 10m"));
+    }
 }

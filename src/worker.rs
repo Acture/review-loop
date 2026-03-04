@@ -6,6 +6,7 @@ use crate::{
     email::poll_imap_if_enabled,
     fallback::submit_with_node_playwright,
     model::{Job, JobStatus},
+    panel::render_tick_panel,
     trigger::{run_git_tag_trigger, run_pdf_trigger},
     util::compute_next_poll_at,
 };
@@ -13,24 +14,37 @@ use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use serde_json::json;
 use std::{path::Path, time::Duration as StdDuration};
+use tracing::{error, info, warn};
 
 const RATE_LIMIT_COOLDOWN_MINUTES: i64 = 30;
 
-pub async fn run_daemon(config: &Config, db: &Db) -> Result<()> {
+pub async fn run_daemon(config: &Config, db: &Db, panel: bool) -> Result<()> {
+    info!("daemon started");
+    let mut tick: u64 = 0;
     loop {
+        tick += 1;
+        let mut last_tick_error: Option<String> = None;
+
         if let Err(err) = run_tick(config, db).await {
-            eprintln!("tick error: {err:#}");
+            let msg = format!("{err:#}");
+            error!(tick, error = %msg, "tick failed");
+            last_tick_error = Some(msg);
+        }
+
+        if panel {
+            render_tick_panel(config, db, tick, last_tick_error.as_deref())?;
         }
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                eprintln!("received Ctrl+C, daemon exiting");
+                info!("received Ctrl+C, daemon exiting");
                 break;
             }
             _ = tokio::time::sleep(StdDuration::from_secs(30)) => {}
         }
     }
 
+    info!("daemon stopped");
     Ok(())
 }
 
@@ -124,6 +138,7 @@ pub async fn submit_job(config: &Config, db: &Db, job_id: &str) -> Result<()> {
                 "submitted",
                 json!({ "backend": backend.name(), "token": receipt.token }),
             )?;
+            info!(job_id = %job.id, backend = %backend.name(), "job submitted");
             Ok(())
         }
         Err(BackendError::RateLimited(message)) => {
@@ -140,6 +155,7 @@ pub async fn submit_job(config: &Config, db: &Db, job_id: &str) -> Result<()> {
                 "submit_rate_limited",
                 json!({ "message": message, "cooldown_minutes": RATE_LIMIT_COOLDOWN_MINUTES }),
             )?;
+            warn!(job_id = %job.id, "submit rate limited; cooldown applied");
             Ok(())
         }
         Err(err) => handle_submit_error_with_fallback(config, db, &job, err).await,
@@ -188,6 +204,7 @@ async fn handle_submit_error_with_fallback(
                     "submitted_via_fallback",
                     json!({ "token": receipt.token }),
                 )?;
+                warn!(job_id = %job.id, "job submitted via fallback script");
                 return Ok(());
             }
             Err(fallback_err) => {
@@ -204,6 +221,7 @@ async fn handle_submit_error_with_fallback(
                     "submit_failed_needs_manual",
                     json!({ "reason": reason }),
                 )?;
+                error!(job_id = %job.id, "submit failed and fallback failed; manual intervention required");
                 return Ok(());
             }
         }
@@ -218,6 +236,7 @@ async fn handle_submit_error_with_fallback(
         Some(Some(reason.clone())),
     )?;
     db.add_event(Some(&job.id), "submit_failed", json!({ "reason": reason }))?;
+    error!(job_id = %job.id, "submit failed");
     Ok(())
 }
 
@@ -262,6 +281,7 @@ pub async fn poll_job(config: &Config, db: &Db, job: &Job) -> Result<()> {
                 Some(None),
             )?;
             db.add_event(Some(&job.id), "review_completed", json!({ "token": token }))?;
+            info!(job_id = %job.id, "review completed and artifacts written");
         }
         Ok(ReviewFetchResult::InvalidToken) => {
             db.update_job_state(
@@ -272,6 +292,7 @@ pub async fn poll_job(config: &Config, db: &Db, job: &Job) -> Result<()> {
                 Some(Some("invalid token".to_string())),
             )?;
             db.add_event(Some(&job.id), "invalid_token", json!({ "token": token }))?;
+            warn!(job_id = %job.id, "invalid token reported by backend");
         }
         Err(BackendError::RateLimited(message)) => {
             let next = Utc::now() + Duration::minutes(RATE_LIMIT_COOLDOWN_MINUTES);
@@ -287,6 +308,7 @@ pub async fn poll_job(config: &Config, db: &Db, job: &Job) -> Result<()> {
                 "poll_rate_limited",
                 json!({ "message": message, "next_poll_at": next.to_rfc3339() }),
             )?;
+            warn!(job_id = %job.id, "poll rate limited; cooldown applied");
         }
         Err(BackendError::Server { status: _, body }) => {
             let next = Utc::now() + Duration::minutes(RATE_LIMIT_COOLDOWN_MINUTES);
@@ -302,6 +324,7 @@ pub async fn poll_job(config: &Config, db: &Db, job: &Job) -> Result<()> {
                 "poll_server_error",
                 json!({ "message": body, "next_poll_at": next.to_rfc3339() }),
             )?;
+            warn!(job_id = %job.id, "poll server error; cooldown applied");
         }
         Err(err) => {
             let next = compute_next_poll_at(
@@ -322,6 +345,7 @@ pub async fn poll_job(config: &Config, db: &Db, job: &Job) -> Result<()> {
                 "poll_error",
                 json!({ "error": err.to_string(), "next_poll_at": next.to_rfc3339() }),
             )?;
+            warn!(job_id = %job.id, "poll failed; scheduled retry");
         }
     }
 
@@ -342,6 +366,7 @@ pub fn mark_timeouts(config: &Config, db: &Db) -> Result<()> {
                 Some(Some("review timed out".to_string())),
             )?;
             db.add_event(Some(&job.id), "timeout", json!({}))?;
+            warn!(job_id = %job.id, "job timed out");
         }
     }
 
