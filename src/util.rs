@@ -83,4 +83,18 @@ mod tests {
         let next = compute_next_poll_at(now, &[10, 20, 40, 60], 99, 0);
         assert_eq!((next - now).num_minutes(), 60);
     }
+
+    #[test]
+    fn backoff_with_jitter_never_goes_below_sixty_seconds() {
+        let now = Utc::now();
+        for _ in 0..64 {
+            let next = compute_next_poll_at(now, &[1], 0, 100);
+            assert!((next - now).num_seconds() >= 60);
+        }
+    }
+
+    #[test]
+    fn parse_rfc3339_rejects_invalid_value() {
+        assert!(parse_rfc3339("not-a-timestamp").is_err());
+    }
 }

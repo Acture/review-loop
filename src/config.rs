@@ -241,3 +241,42 @@ impl Default for ImapConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn defaults_start_polling_at_ten_minutes() {
+        let cfg = Config::default();
+        assert_eq!(cfg.polling.schedule_minutes, vec![10, 20, 40, 60]);
+    }
+
+    #[test]
+    fn default_imap_has_stanford_pattern() {
+        let cfg = Config::default();
+        let imap = cfg.imap.expect("imap config should exist by default");
+        assert!(imap.backend_patterns.contains_key("stanford"));
+    }
+
+    #[test]
+    fn validate_rejects_zero_concurrency() {
+        let mut cfg = Config::default();
+        cfg.core.max_concurrency = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_poll_schedule() {
+        let mut cfg = Config::default();
+        cfg.polling.schedule_minutes.clear();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_stanford_email() {
+        let mut cfg = Config::default();
+        cfg.providers.stanford.email = "   ".to_string();
+        assert!(cfg.validate().is_err());
+    }
+}

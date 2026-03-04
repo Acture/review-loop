@@ -49,4 +49,15 @@ mod tests {
             Some("abcDEF123")
         );
     }
+
+    #[test]
+    fn prefers_review_url_when_multiple_token_like_strings_exist() {
+        let text = "Access token: old_token_123 https://paperreview.ai/review?token=new_token_456";
+        assert_eq!(extract_review_token(text).as_deref(), Some("new_token_456"));
+    }
+
+    #[test]
+    fn returns_none_when_no_token_found() {
+        assert_eq!(extract_review_token("hello world"), None);
+    }
 }

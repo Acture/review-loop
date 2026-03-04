@@ -96,3 +96,48 @@ fn title_case(input: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::render_summary_markdown;
+    use serde_json::json;
+
+    #[test]
+    fn renders_sections_when_present() {
+        let raw = json!({
+            "title": "A Paper",
+            "venue": "ICLR",
+            "sections": {
+                "summary": "Good summary",
+                "strengths": "Strong experiments"
+            }
+        });
+
+        let md = render_summary_markdown(&raw);
+        assert!(md.contains("# Review Summary"));
+        assert!(md.contains("## Summary"));
+        assert!(md.contains("Good summary"));
+        assert!(md.contains("## Strengths"));
+    }
+
+    #[test]
+    fn renders_content_fallback() {
+        let raw = json!({
+            "title": "A Paper",
+            "content": "Full review body"
+        });
+        let md = render_summary_markdown(&raw);
+        assert!(md.contains("## Content"));
+        assert!(md.contains("Full review body"));
+    }
+
+    #[test]
+    fn renders_raw_json_fallback() {
+        let raw = json!({
+            "foo": "bar"
+        });
+        let md = render_summary_markdown(&raw);
+        assert!(md.contains("## Raw JSON"));
+        assert!(md.contains("\"foo\": \"bar\""));
+    }
+}
