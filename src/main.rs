@@ -1,26 +1,14 @@
-mod artifact;
-mod backend;
-mod config;
-mod db;
-mod email;
-mod fallback;
-mod model;
-mod token;
-mod trigger;
-mod util;
-mod worker;
-
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use config::Config;
-use db::Db;
-use model::{JobStatus, NewJob};
+use reviewloop::config::Config;
+use reviewloop::db::Db;
+use reviewloop::model::{JobStatus, NewJob};
+use reviewloop::util::{compute_next_poll_at, sha256_file};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use util::{compute_next_poll_at, sha256_file};
 
 #[derive(Debug, Parser)]
 #[command(name = "reviewloop")]
@@ -95,7 +83,7 @@ async fn run() -> Result<()> {
             command: DaemonCommand::Run,
         } => {
             let (config, db) = load_runtime(&cli.config)?;
-            worker::run_daemon(&config, &db).await
+            reviewloop::worker::run_daemon(&config, &db).await
         }
         Command::Submit { paper_id, force } => {
             let (config, db) = load_runtime(&cli.config)?;
@@ -213,7 +201,7 @@ async fn cmd_submit(config: &Config, db: &Db, paper_id: &str, force: bool) -> Re
         serde_json::json!({ "paper_id": paper_id, "force": force }),
     )?;
 
-    worker::submit_job(config, db, &job.id).await?;
+    reviewloop::worker::submit_job(config, db, &job.id).await?;
     println!("Submitted job {} for paper_id={paper_id}", job.id);
     Ok(())
 }
