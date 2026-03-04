@@ -161,20 +161,11 @@ impl Default for PollingConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TriggerConfig {
     pub git: GitTriggerConfig,
     pub pdf: PdfTriggerConfig,
-}
-
-impl Default for TriggerConfig {
-    fn default() -> Self {
-        Self {
-            git: GitTriggerConfig::default(),
-            pdf: PdfTriggerConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,18 +208,10 @@ impl Default for PdfTriggerConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProvidersConfig {
     pub stanford: StanfordProviderConfig,
-}
-
-impl Default for ProvidersConfig {
-    fn default() -> Self {
-        Self {
-            stanford: StanfordProviderConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
