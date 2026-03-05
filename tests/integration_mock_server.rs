@@ -527,3 +527,77 @@ console.log(JSON.stringify({ success: true, token: "fallback-token-123" }));
 
     Ok(())
 }
+
+#[tokio::test]
+async fn integration_virtual_paper_e2e_single_tick_completes() -> Result<()> {
+    let state = Arc::new(MockState::default());
+    let server = MockServer::start(state.clone()).await?;
+
+    state.enqueue_get_upload(MockReply::json(
+        StatusCode::OK,
+        json!({
+            "success": true,
+            "presigned_url": format!("{}/s3/upload", server.base_url),
+            "s3_key": "uploads/virtual-paper.pdf",
+            "presigned_fields": {
+                "key": "uploads/virtual-paper.pdf",
+                "policy": "abc",
+                "x-amz-algorithm": "AWS4-HMAC-SHA256",
+                "x-amz-credential": "credential",
+                "x-amz-date": "20260305T000000Z",
+                "x-amz-signature": "sig"
+            }
+        }),
+    ));
+    state.enqueue_s3(MockReply::text(StatusCode::NO_CONTENT, ""));
+    state.enqueue_confirm(MockReply::json(
+        StatusCode::OK,
+        json!({ "success": true, "token": "tok-virtual-e2e" }),
+    ));
+    state.enqueue_review(
+        "tok-virtual-e2e",
+        MockReply::json(
+            StatusCode::OK,
+            json!({
+                "title": "Virtual Paper",
+                "sections": {
+                    "summary": "End-to-end mock loop passed",
+                    "strengths": "Automated submission and retrieval",
+                    "weaknesses": "Synthetic content only"
+                }
+            }),
+        ),
+    );
+
+    let mut ctx = TestContext::new(server.base_url.clone())?;
+    // Make the input explicit in the test: this is a synthetic paper fixture.
+    fs::write(
+        &ctx.pdf_path,
+        b"%PDF-1.4\n%VirtualPaper\n1 0 obj\n<< /Title (Virtual Paper) >>\nendobj\n%%EOF\n",
+    )?;
+    ctx.config.polling.schedule_minutes = vec![0];
+
+    let job = ctx.create_job(JobStatus::Queued)?;
+    worker::run_tick(&ctx.config, &ctx.db).await?;
+
+    let done = ctx
+        .db
+        .get_job(&job.id)?
+        .context("virtual e2e job not found")?;
+    assert_eq!(done.status, JobStatus::Completed);
+    assert_eq!(done.token.as_deref(), Some("tok-virtual-e2e"));
+
+    let artifact_root = Path::new(&ctx.config.core.state_dir)
+        .join("artifacts")
+        .join(&job.id);
+    assert!(artifact_root.join("review.json").exists());
+    assert!(artifact_root.join("review.md").exists());
+    assert!(artifact_root.join("meta.json").exists());
+
+    assert_eq!(state.call_count("get_upload"), 1);
+    assert_eq!(state.call_count("s3_upload"), 1);
+    assert_eq!(state.call_count("confirm_upload"), 1);
+    assert_eq!(state.call_count("review:tok-virtual-e2e"), 1);
+
+    Ok(())
+}
