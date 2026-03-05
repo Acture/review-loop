@@ -421,7 +421,7 @@ impl Default for ImapConfig {
         );
 
         Self {
-            enabled: false,
+            enabled: true,
             server: "imap.gmail.com".to_string(),
             port: 993,
             username: "".to_string(),

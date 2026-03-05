@@ -1,10 +1,8 @@
 use crate::config::Config;
 use crate::db::Db;
 use anyhow::Result;
-#[cfg(any(feature = "imap-listener", test))]
 use regex::Regex;
 
-#[cfg(any(feature = "imap-listener", test))]
 fn detect_backend_from_header(
     header_text: &str,
     config: &crate::config::ImapConfig,
@@ -19,7 +17,6 @@ fn detect_backend_from_header(
     None
 }
 
-#[cfg(feature = "imap-listener")]
 mod imap_impl {
     use crate::{
         config::{Config, ImapConfig},
@@ -195,14 +192,8 @@ mod imap_impl {
     }
 }
 
-#[cfg(feature = "imap-listener")]
 pub async fn poll_imap_if_enabled(config: &Config, db: &Db) -> Result<()> {
     imap_impl::poll_imap_if_enabled(config, db).await
-}
-
-#[cfg(not(feature = "imap-listener"))]
-pub async fn poll_imap_if_enabled(_config: &Config, _db: &Db) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

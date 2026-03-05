@@ -54,12 +54,6 @@ cargo run -- submit --paper-id main
 cargo run -- daemon run
 ```
 
-If you want IMAP token listening:
-
-```bash
-cargo run --features imap-listener -- daemon run
-```
-
 ## Runtime Model
 
 Each daemon tick (every 30s) does:
@@ -137,7 +131,7 @@ Example:
 
 ## IMAP Token Matching (Optional)
 
-IMAP listener is behind a feature flag.
+IMAP listener is built in (no extra feature flag needed).
 
 Default pattern includes Stanford:
 
@@ -156,7 +150,7 @@ Example:
 
 ```toml
 [imap]
-enabled = true
+enabled = true # default
 server = "imap.gmail.com"
 port = 993
 username = "acturea@gmail.com"
@@ -175,6 +169,7 @@ stanford = "https?://paperreview\\.ai/review\\?token=([A-Za-z0-9_-]+)"
 
 Matched token for backend `X` is attached to the latest open job for backend `X` without a token.
 When a token is attached from IMAP, ReviewLoop schedules immediate polling (`next_poll_at = now`) so the same daemon tick can retrieve results.
+If `username` / `password` are empty, IMAP polling is skipped.
 
 ## Responsible Use (Important)
 
