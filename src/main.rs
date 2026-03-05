@@ -8,9 +8,10 @@ use reviewloop::model::{JobStatus, NewJob};
 use reviewloop::oauth::{self, google::GoogleOauthProvider};
 use reviewloop::util::{compute_next_poll_at, sha256_file};
 use std::{
-    fs,
-    io::IsTerminal,
+    env, fs,
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
+    process::Command as ProcessCommand,
 };
 use tracing::{info, warn};
 
@@ -75,6 +76,12 @@ enum DaemonCommand {
         #[arg(long, default_value_t = true)]
         panel: bool,
     },
+    Install {
+        #[arg(long, default_value_t = true)]
+        start: bool,
+    },
+    Uninstall,
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -95,6 +102,10 @@ enum PaperCommand {
         watch: bool,
         #[arg(long)]
         tag_trigger: Option<String>,
+        #[arg(long, default_value_t = false)]
+        submit_now: bool,
+        #[arg(long, default_value_t = false)]
+        no_submit_prompt: bool,
     },
     Watch {
         #[arg(long)]
@@ -130,13 +141,16 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    let Cli { config, command } = Cli::parse();
+    let Cli {
+        config: config_override,
+        command,
+    } = Cli::parse();
     Config::ensure_global_config_file()?;
     Config::ensure_global_data_dir()?;
 
     match command {
         Command::Paper { command } => {
-            let write_path = resolve_mutable_config_path(config.as_deref())?;
+            let write_path = resolve_mutable_config_path(config_override.as_deref())?;
             match command {
                 PaperCommand::Add {
                     paper_id,
@@ -144,35 +158,53 @@ async fn run() -> Result<()> {
                     backend,
                     watch,
                     tag_trigger,
-                } => cmd_paper_add(
-                    &write_path,
-                    &paper_id,
-                    &pdf_path,
-                    &backend,
-                    watch,
-                    tag_trigger.as_deref(),
-                ),
+                    submit_now,
+                    no_submit_prompt,
+                } => {
+                    let should_submit = cmd_paper_add(PaperAddOptions {
+                        config_path: &write_path,
+                        paper_id: &paper_id,
+                        pdf_path: &pdf_path,
+                        backend: &backend,
+                        watch,
+                        tag_trigger: tag_trigger.as_deref(),
+                        submit_now,
+                        no_submit_prompt,
+                    })?;
+                    if should_submit {
+                        let (config, db) = load_runtime(Some(write_path.as_path()), false)?;
+                        cmd_submit(&config, &db, &paper_id, false).await?;
+                    }
+                    Ok(())
+                }
                 PaperCommand::Watch { paper_id, enabled } => {
                     cmd_paper_watch(&write_path, &paper_id, enabled)
                 }
             }
         }
-        Command::Daemon {
-            command: DaemonCommand::Run { panel },
-        } => {
-            let panel_enabled = panel && std::io::stdout().is_terminal();
-            if panel && !panel_enabled {
-                eprintln!("note: panel requested but stdout is not a TTY; running without panel.");
+        Command::Daemon { command } => match command {
+            DaemonCommand::Run { panel } => {
+                let panel_enabled = panel && std::io::stdout().is_terminal();
+                if panel && !panel_enabled {
+                    eprintln!(
+                        "note: panel requested but stdout is not a TTY; running without panel."
+                    );
+                }
+                let (config, db) = load_runtime(config_override.as_deref(), panel_enabled)?;
+                reviewloop::worker::run_daemon(&config, &db, panel_enabled).await
             }
-            let (config, db) = load_runtime(config.as_deref(), panel_enabled)?;
-            reviewloop::worker::run_daemon(&config, &db, panel_enabled).await
-        }
+            DaemonCommand::Install { start } => {
+                cmd_daemon_install(config_override.as_deref(), start)
+            }
+            DaemonCommand::Uninstall => cmd_daemon_uninstall(),
+            DaemonCommand::Status => cmd_daemon_status(),
+        },
         Command::Submit { paper_id, force } => {
-            let (config, db) = load_runtime(config.as_deref(), false)?;
+            let (config, db) = load_runtime(config_override.as_deref(), false)?;
             cmd_submit(&config, &db, &paper_id, force).await
         }
         Command::Approve { job_id } => {
-            let (_config, db) = load_runtime(config.as_deref(), false)?;
+            let (_config, db) = load_runtime(config_override.as_deref(), false)?;
             cmd_approve(&db, &job_id)
         }
         Command::ImportToken {
@@ -180,19 +212,19 @@ async fn run() -> Result<()> {
             token,
             source,
         } => {
-            let (config, db) = load_runtime(config.as_deref(), false)?;
+            let (config, db) = load_runtime(config_override.as_deref(), false)?;
             cmd_import_token(&config, &db, &paper_id, &token, &source)
         }
         Command::Status { paper_id, json } => {
-            let (_config, db) = load_runtime(config.as_deref(), false)?;
+            let (_config, db) = load_runtime(config_override.as_deref(), false)?;
             cmd_status(&db, paper_id.as_deref(), json)
         }
         Command::Retry { job_id } => {
-            let (config, db) = load_runtime(config.as_deref(), false)?;
+            let (config, db) = load_runtime(config_override.as_deref(), false)?;
             cmd_retry(&config, &db, &job_id)
         }
         Command::Email { command } => {
-            let (config, _db) = load_runtime(config.as_deref(), false)?;
+            let (config, _db) = load_runtime(config_override.as_deref(), false)?;
             match command {
                 EmailCommand::Login { provider } => cmd_email_login(&config, &provider).await,
                 EmailCommand::Logout { account } => cmd_email_logout(&config, account.as_deref()),
@@ -229,47 +261,71 @@ fn load_or_create_config(path: &Path) -> Result<Config> {
     Ok(cfg)
 }
 
-fn cmd_paper_add(
-    config_path: &Path,
-    paper_id: &str,
-    pdf_path: &str,
-    backend: &str,
+struct PaperAddOptions<'a> {
+    config_path: &'a Path,
+    paper_id: &'a str,
+    pdf_path: &'a str,
+    backend: &'a str,
     watch: bool,
-    tag_trigger: Option<&str>,
-) -> Result<()> {
-    let mut config = load_or_create_config(config_path)?;
-    if config.find_paper(paper_id).is_some() {
-        anyhow::bail!("paper_id already exists: {paper_id}");
+    tag_trigger: Option<&'a str>,
+    submit_now: bool,
+    no_submit_prompt: bool,
+}
+
+fn cmd_paper_add(options: PaperAddOptions<'_>) -> Result<bool> {
+    let mut config = load_or_create_config(options.config_path)?;
+    if config.find_paper(options.paper_id).is_some() {
+        anyhow::bail!("paper_id already exists: {}", options.paper_id);
     }
 
     config.papers.push(PaperConfig {
-        id: paper_id.to_string(),
-        pdf_path: pdf_path.to_string(),
-        backend: backend.to_string(),
+        id: options.paper_id.to_string(),
+        pdf_path: options.pdf_path.to_string(),
+        backend: options.backend.to_string(),
     });
-    config.set_paper_watch(paper_id, watch);
+    config.set_paper_watch(options.paper_id, options.watch);
     config.set_paper_tag_trigger(
-        paper_id,
-        tag_trigger
+        options.paper_id,
+        options
+            .tag_trigger
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(str::to_string),
     );
-    config.save(config_path)?;
+    config.save(options.config_path)?;
 
-    let watch_text = if watch { "enabled" } else { "disabled" };
-    if let Some(trigger) = tag_trigger {
+    let watch_text = if options.watch { "enabled" } else { "disabled" };
+    if let Some(trigger) = options.tag_trigger {
         println!(
             "Added paper {paper_id}.\n- backend: {backend}\n- pdf path: {pdf_path}\n- watch: {watch_text}\n- tag trigger: {trigger}\n- config: {}",
-            config_path.display()
+            options.config_path.display(),
+            paper_id = options.paper_id,
+            backend = options.backend,
+            pdf_path = options.pdf_path,
         );
     } else {
         println!(
             "Added paper {paper_id}.\n- backend: {backend}\n- pdf path: {pdf_path}\n- watch: {watch_text}\n- config: {}",
-            config_path.display()
+            options.config_path.display(),
+            paper_id = options.paper_id,
+            backend = options.backend,
+            pdf_path = options.pdf_path,
         );
     }
-    Ok(())
+
+    if options.submit_now {
+        return Ok(true);
+    }
+
+    if !options.no_submit_prompt
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && prompt_yes_no("Submit this paper now? [y/N]: ")?
+    {
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 fn cmd_paper_watch(config_path: &Path, paper_id: &str, enabled: bool) -> Result<()> {
@@ -285,6 +341,231 @@ fn cmd_paper_watch(config_path: &Path, paper_id: &str, enabled: bool) -> Result<
         config_path.display()
     );
     Ok(())
+}
+
+fn prompt_yes_no(prompt: &str) -> Result<bool> {
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let normalized = input.trim().to_ascii_lowercase();
+    Ok(matches!(normalized.as_str(), "y" | "yes"))
+}
+
+fn cmd_daemon_install(config_override: Option<&Path>, start: bool) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        const DAEMON_LABEL: &str = "ai.reviewloop.daemon";
+
+        let cfg_path = resolve_mutable_config_path(config_override)?;
+        let cfg_path = fs::canonicalize(&cfg_path).unwrap_or(cfg_path);
+        let config = Config::load(&cfg_path)?;
+        ensure_runtime_dirs(&config)?;
+
+        let home = env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
+        let launch_agents_dir = PathBuf::from(home).join("Library").join("LaunchAgents");
+        fs::create_dir_all(&launch_agents_dir).with_context(|| {
+            format!(
+                "failed to create launch agents directory: {}",
+                launch_agents_dir.display()
+            )
+        })?;
+
+        let plist_path = launch_agents_dir.join(format!("{DAEMON_LABEL}.plist"));
+        let exe = env::current_exe().context("failed to locate current executable path")?;
+        let stdout_log = config.state_dir().join("daemon.stdout.log");
+        let stderr_log = config.state_dir().join("daemon.stderr.log");
+
+        let args = vec![
+            exe.display().to_string(),
+            "--config".to_string(),
+            cfg_path.display().to_string(),
+            "daemon".to_string(),
+            "run".to_string(),
+            "--panel".to_string(),
+            "false".to_string(),
+        ];
+        let plist = render_launchd_plist(DAEMON_LABEL, &args, &stdout_log, &stderr_log);
+        fs::write(&plist_path, plist)
+            .with_context(|| format!("failed to write launchd plist: {}", plist_path.display()))?;
+
+        println!("Installed launchd plist at {}", plist_path.display());
+
+        if start {
+            let uid = current_uid_string()?;
+            let domain = format!("gui/{uid}");
+            let target = format!("{domain}/{DAEMON_LABEL}");
+
+            let _ = ProcessCommand::new("launchctl")
+                .args(["bootout", &target])
+                .output();
+
+            let bootstrap = ProcessCommand::new("launchctl")
+                .args(["bootstrap", &domain, plist_path.to_string_lossy().as_ref()])
+                .output()
+                .context("failed to run launchctl bootstrap")?;
+            if !bootstrap.status.success() {
+                anyhow::bail!(
+                    "launchctl bootstrap failed: {}",
+                    String::from_utf8_lossy(&bootstrap.stderr)
+                );
+            }
+
+            let _ = ProcessCommand::new("launchctl")
+                .args(["enable", &target])
+                .output();
+            let kickstart = ProcessCommand::new("launchctl")
+                .args(["kickstart", "-k", &target])
+                .output()
+                .context("failed to run launchctl kickstart")?;
+            if !kickstart.status.success() {
+                anyhow::bail!(
+                    "launchctl kickstart failed: {}",
+                    String::from_utf8_lossy(&kickstart.stderr)
+                );
+            }
+
+            println!("Daemon started via launchd.");
+        } else {
+            println!(
+                "Run `launchctl bootstrap gui/$(id -u) {}` to start it.",
+                plist_path.display()
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = config_override;
+        let _ = start;
+        anyhow::bail!("`daemon install` is currently supported on macOS only");
+    }
+}
+
+fn cmd_daemon_uninstall() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        const DAEMON_LABEL: &str = "ai.reviewloop.daemon";
+        let home = env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
+        let plist_path = PathBuf::from(home)
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{DAEMON_LABEL}.plist"));
+
+        let uid = current_uid_string()?;
+        let target = format!("gui/{uid}/{DAEMON_LABEL}");
+        let _ = ProcessCommand::new("launchctl")
+            .args(["bootout", &target])
+            .output();
+
+        if plist_path.exists() {
+            fs::remove_file(&plist_path)
+                .with_context(|| format!("failed to remove {}", plist_path.display()))?;
+            println!("Removed {}", plist_path.display());
+        } else {
+            println!("No launchd plist found at {}", plist_path.display());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        anyhow::bail!("`daemon uninstall` is currently supported on macOS only");
+    }
+}
+
+fn cmd_daemon_status() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        const DAEMON_LABEL: &str = "ai.reviewloop.daemon";
+        let uid = current_uid_string()?;
+        let target = format!("gui/{uid}/{DAEMON_LABEL}");
+        let output = ProcessCommand::new("launchctl")
+            .args(["print", &target])
+            .output()
+            .context("failed to run launchctl print")?;
+
+        if output.status.success() {
+            println!("launchd job is loaded: {target}");
+        } else {
+            println!("launchd job is not loaded: {target}");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        anyhow::bail!("`daemon status` is currently supported on macOS only");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn current_uid_string() -> Result<String> {
+    let output = ProcessCommand::new("id")
+        .arg("-u")
+        .output()
+        .context("failed to run id -u")?;
+    if !output.status.success() {
+        anyhow::bail!("id -u failed: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if uid.is_empty() {
+        anyhow::bail!("id -u returned empty uid");
+    }
+    Ok(uid)
+}
+
+#[cfg(target_os = "macos")]
+fn render_launchd_plist(
+    label: &str,
+    args: &[String],
+    stdout_log: &Path,
+    stderr_log: &Path,
+) -> String {
+    let args_xml = args
+        .iter()
+        .map(|arg| format!("    <string>{}</string>", xml_escape(arg)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+{args_xml}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{stdout_log}</string>
+  <key>StandardErrorPath</key>
+  <string>{stderr_log}</string>
+</dict>
+</plist>
+"#,
+        label = xml_escape(label),
+        args_xml = args_xml,
+        stdout_log = xml_escape(&stdout_log.to_string_lossy()),
+        stderr_log = xml_escape(&stderr_log.to_string_lossy())
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn load_runtime(config_override: Option<&Path>, force_stderr_logs: bool) -> Result<(Config, Db)> {
