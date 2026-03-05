@@ -50,8 +50,8 @@ reviewloop paper add \
   --tag-trigger "custom-review/camera_ready/*"
 
 # 4) submit and run daemon
-reviewloop submit --paper-id main
-reviewloop daemon run
+# `paper add` will prompt whether to submit immediately
+reviewloop daemon install --start true
 ```
 
 ## Installation
@@ -91,10 +91,13 @@ reviewloop [--config /path/to/override.toml] <command>
 Core commands:
 
 ```bash
-reviewloop paper add --paper-id <id> --path <pdf-or-build-artifact> --backend <backend> [--watch true|false] [--tag-trigger "<pattern>"]
+reviewloop paper add --paper-id <id> --path <pdf-or-build-artifact> --backend <backend> [--watch true|false] [--tag-trigger "<pattern>"] [--submit-now] [--no-submit-prompt]
 reviewloop paper watch --paper-id <id> --enabled <true|false>
 reviewloop daemon run
 reviewloop daemon run --panel false
+reviewloop daemon install [--start true]
+reviewloop daemon uninstall
+reviewloop daemon status
 reviewloop submit --paper-id main [--force]
 reviewloop approve --job-id <job-id>
 reviewloop import-token --paper-id main --token <token> [--source email]
