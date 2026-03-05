@@ -179,7 +179,7 @@ pub async fn run_device_login(provider: &dyn OauthProvider, _config: &Config) ->
     }
 }
 
-fn open_browser_url(url: &str) -> bool {
+pub(crate) fn open_browser_url(url: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
         if Command::new("open")

@@ -15,6 +15,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+const DEFAULT_GOOGLE_CLIENT_ID: &str =
+    "159112762522-82ces4lrs8hodbl79gu9usvmvs4lkmnr.apps.googleusercontent.com";
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://www.googleapis.com/oauth2/v3/token";
 const DEVICE_CODE_URL: &str = "https://oauth2.googleapis.com/device/code";
@@ -46,12 +48,13 @@ impl GoogleOauthProvider {
         }
         let mut resolved = cfg.clone();
         if resolved.client_id.trim().is_empty() {
-            resolved.client_id = env::var("REVIEWLOOP_GMAIL_CLIENT_ID").unwrap_or_default();
+            resolved.client_id = env::var("REVIEWLOOP_GMAIL_CLIENT_ID")
+                .unwrap_or_else(|_| DEFAULT_GOOGLE_CLIENT_ID.to_string());
         }
         if resolved.client_secret.trim().is_empty() {
             resolved.client_secret = env::var("REVIEWLOOP_GMAIL_CLIENT_SECRET").unwrap_or_default();
         }
-        if resolved.client_id.trim().is_empty() || resolved.client_secret.trim().is_empty() {
+        if resolved.client_id.trim().is_empty() {
             return Ok(None);
         }
         let token_path = if let Some(path) = &resolved.token_store_path {
@@ -94,23 +97,36 @@ impl OauthProvider for GoogleOauthProvider {
     }
 
     async fn start_device_flow(&self) -> Result<DeviceCodeStart> {
+        let http_client = Self::http_client()?;
         let auth_url = AuthUrl::new(AUTH_URL.to_string()).context("invalid google auth url")?;
         let token_url = TokenUrl::new(TOKEN_URL.to_string()).context("invalid google token url")?;
         let device_auth_url = DeviceAuthorizationUrl::new(DEVICE_CODE_URL.to_string())
             .context("invalid google device code url")?;
-        let client = BasicClient::new(ClientId::new(self.cfg.client_id.clone()))
-            .set_client_secret(ClientSecret::new(self.cfg.client_secret.clone()))
-            .set_auth_uri(auth_url)
-            .set_token_uri(token_url)
-            .set_device_authorization_url(device_auth_url)
-            .set_auth_type(AuthType::RequestBody);
-        let http_client = Self::http_client()?;
-        let details: StandardDeviceAuthorizationResponse = client
-            .exchange_device_code()
-            .add_scope(Scope::new(self.scope().to_string()))
-            .request_async(&http_client)
-            .await
-            .context("failed to request google device code")?;
+        let details: StandardDeviceAuthorizationResponse =
+            if self.cfg.client_secret.trim().is_empty() {
+                BasicClient::new(ClientId::new(self.cfg.client_id.clone()))
+                    .set_auth_uri(auth_url.clone())
+                    .set_token_uri(token_url.clone())
+                    .set_device_authorization_url(device_auth_url.clone())
+                    .set_auth_type(AuthType::RequestBody)
+                    .exchange_device_code()
+                    .add_scope(Scope::new(self.scope().to_string()))
+                    .request_async(&http_client)
+                    .await
+                    .context("failed to request google device code")?
+            } else {
+                BasicClient::new(ClientId::new(self.cfg.client_id.clone()))
+                    .set_client_secret(ClientSecret::new(self.cfg.client_secret.clone()))
+                    .set_auth_uri(auth_url)
+                    .set_token_uri(token_url)
+                    .set_device_authorization_url(device_auth_url)
+                    .set_auth_type(AuthType::RequestBody)
+                    .exchange_device_code()
+                    .add_scope(Scope::new(self.scope().to_string()))
+                    .request_async(&http_client)
+                    .await
+                    .context("failed to request google device code")?
+            };
 
         let device_code = details.device_code().secret().to_string();
         self.pending
@@ -139,21 +155,31 @@ impl OauthProvider for GoogleOauthProvider {
             .cloned()
             .ok_or_else(|| anyhow!("missing pending device session for code"))?;
 
+        let http_client = Self::http_client()?;
         let auth_url = AuthUrl::new(AUTH_URL.to_string()).context("invalid google auth url")?;
         let token_url = TokenUrl::new(TOKEN_URL.to_string()).context("invalid google token url")?;
         let device_auth_url = DeviceAuthorizationUrl::new(DEVICE_CODE_URL.to_string())
             .context("invalid google device code url")?;
-        let client = BasicClient::new(ClientId::new(self.cfg.client_id.clone()))
-            .set_client_secret(ClientSecret::new(self.cfg.client_secret.clone()))
-            .set_auth_uri(auth_url)
-            .set_token_uri(token_url)
-            .set_device_authorization_url(device_auth_url)
-            .set_auth_type(AuthType::RequestBody);
-        let http_client = Self::http_client()?;
-        let token_result = client
-            .exchange_device_access_token(&details)
-            .request_async(&http_client, tokio::time::sleep, None)
-            .await;
+        let token_result = if self.cfg.client_secret.trim().is_empty() {
+            BasicClient::new(ClientId::new(self.cfg.client_id.clone()))
+                .set_auth_uri(auth_url.clone())
+                .set_token_uri(token_url.clone())
+                .set_device_authorization_url(device_auth_url.clone())
+                .set_auth_type(AuthType::RequestBody)
+                .exchange_device_access_token(&details)
+                .request_async(&http_client, tokio::time::sleep, None)
+                .await
+        } else {
+            BasicClient::new(ClientId::new(self.cfg.client_id.clone()))
+                .set_client_secret(ClientSecret::new(self.cfg.client_secret.clone()))
+                .set_auth_uri(auth_url)
+                .set_token_uri(token_url)
+                .set_device_authorization_url(device_auth_url)
+                .set_auth_type(AuthType::RequestBody)
+                .exchange_device_access_token(&details)
+                .request_async(&http_client, tokio::time::sleep, None)
+                .await
+        };
 
         match token_result {
             Ok(token) => {
@@ -212,22 +238,33 @@ impl OauthProvider for GoogleOauthProvider {
     }
 
     async fn refresh_access_token(&self, refresh_token: &str) -> Result<OauthTokenResponse> {
+        let http_client = Self::http_client()?;
         let auth_url = AuthUrl::new(AUTH_URL.to_string()).context("invalid google auth url")?;
         let token_url = TokenUrl::new(TOKEN_URL.to_string()).context("invalid google token url")?;
         let device_auth_url = DeviceAuthorizationUrl::new(DEVICE_CODE_URL.to_string())
             .context("invalid google device code url")?;
-        let client = BasicClient::new(ClientId::new(self.cfg.client_id.clone()))
-            .set_client_secret(ClientSecret::new(self.cfg.client_secret.clone()))
-            .set_auth_uri(auth_url)
-            .set_token_uri(token_url)
-            .set_device_authorization_url(device_auth_url)
-            .set_auth_type(AuthType::RequestBody);
-        let http_client = Self::http_client()?;
-        let token = client
-            .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
-            .request_async(&http_client)
-            .await
-            .context("failed to refresh google access token")?;
+        let token = if self.cfg.client_secret.trim().is_empty() {
+            BasicClient::new(ClientId::new(self.cfg.client_id.clone()))
+                .set_auth_uri(auth_url.clone())
+                .set_token_uri(token_url.clone())
+                .set_device_authorization_url(device_auth_url.clone())
+                .set_auth_type(AuthType::RequestBody)
+                .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
+                .request_async(&http_client)
+                .await
+                .context("failed to refresh google access token")?
+        } else {
+            BasicClient::new(ClientId::new(self.cfg.client_id.clone()))
+                .set_client_secret(ClientSecret::new(self.cfg.client_secret.clone()))
+                .set_auth_uri(auth_url)
+                .set_token_uri(token_url)
+                .set_device_authorization_url(device_auth_url)
+                .set_auth_type(AuthType::RequestBody)
+                .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
+                .request_async(&http_client)
+                .await
+                .context("failed to refresh google access token")?
+        };
 
         let scope = token.scopes().map(|scopes| {
             scopes
