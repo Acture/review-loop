@@ -196,6 +196,9 @@ You can also provide credentials via environment variables:
 - `REVIEWLOOP_GMAIL_CLIENT_ID`
 - `REVIEWLOOP_GMAIL_CLIENT_SECRET`
 
+For official CI-built binaries, these same variable names can be injected at compile time
+via GitHub Actions `secrets.*`; runtime env/config can still override them.
+
 Then login:
 
 ```bash
@@ -277,6 +280,10 @@ On tag push like `v0.1.0`:
 Required secrets:
 - `CARGO_REGISTRY_TOKEN`
 - `HOMEBREW_TAP_GITHUB_TOKEN`
+
+Optional secrets (compile-time OAuth defaults for release/CI builds):
+- `REVIEWLOOP_GMAIL_CLIENT_ID`
+- `REVIEWLOOP_GMAIL_CLIENT_SECRET`
 
 Optional repo variables:
 - `HOMEBREW_TAP_REPO` (default: `Acture/homebrew-ac`)
