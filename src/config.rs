@@ -400,11 +400,20 @@ pub struct ImapConfig {
     pub folder: String,
     pub poll_seconds: u64,
     pub mark_seen: bool,
+    pub header_first: bool,
+    pub backend_header_patterns: BTreeMap<String, String>,
     pub backend_patterns: BTreeMap<String, String>,
 }
 
 impl Default for ImapConfig {
     fn default() -> Self {
+        let mut backend_header_patterns = BTreeMap::new();
+        backend_header_patterns.insert(
+            "stanford".to_string(),
+            r"(?is)(from:\s*.*mail\.paperreview\.ai|subject:\s*.*paper review is ready)"
+                .to_string(),
+        );
+
         let mut backend_patterns = BTreeMap::new();
         backend_patterns.insert(
             "stanford".to_string(),
@@ -420,6 +429,8 @@ impl Default for ImapConfig {
             folder: "INBOX".to_string(),
             poll_seconds: 300,
             mark_seen: true,
+            header_first: true,
+            backend_header_patterns,
             backend_patterns,
         }
     }
@@ -448,6 +459,8 @@ mod tests {
         let cfg = Config::default();
         let imap = cfg.imap.expect("imap config should exist by default");
         assert!(imap.backend_patterns.contains_key("stanford"));
+        assert!(imap.backend_header_patterns.contains_key("stanford"));
+        assert!(imap.header_first);
     }
 
     #[test]

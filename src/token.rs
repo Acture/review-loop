@@ -20,8 +20,8 @@ fn extract_from_candidate(text: &str) -> Option<String> {
     }
 
     // Secondary: any token query parameter in encoded/raw URLs.
-    let token_query_re = Regex::new(r"(?i)(?:[?&]|(?:^|\W))token(?:=|%3d)([A-Za-z0-9_-]{12,})")
-        .ok()?;
+    let token_query_re =
+        Regex::new(r"(?i)(?:[?&]|(?:^|\W))token(?:=|%3d)([A-Za-z0-9_-]{12,})").ok()?;
     if let Some(cap) = token_query_re.captures(text) {
         return cap.get(1).map(|m| m.as_str().to_string());
     }
@@ -115,7 +115,10 @@ mod tests {
             super::normalize_email_encoded_text(text),
             "https://paperreview.ai/review?token=abc123xyz_789token"
         );
-        assert_eq!(extract_review_token(text).as_deref(), Some("abc123xyz_789token"));
+        assert_eq!(
+            extract_review_token(text).as_deref(),
+            Some("abc123xyz_789token")
+        );
     }
 
     #[test]

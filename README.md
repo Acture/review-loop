@@ -146,7 +146,35 @@ Default pattern includes Stanford:
 stanford = "https?://paperreview\\.ai/review\\?token=([A-Za-z0-9_-]+)"
 ```
 
+Recommended minimal-permission mode (default):
+
+- `imap.header_first = true` (fetch only `Subject` + `From` headers first)
+- `imap.backend_header_patterns` decides whether to download that email body
+- only matched emails are fetched in full and token-parsed
+
+Example:
+
+```toml
+[imap]
+enabled = true
+server = "imap.gmail.com"
+port = 993
+username = "acturea@gmail.com"
+password = "your-app-password"
+folder = "INBOX"
+poll_seconds = 300
+mark_seen = true
+header_first = true
+
+[imap.backend_header_patterns]
+stanford = "(?is)(from:\\s*.*mail\\.paperreview\\.ai|subject:\\s*.*paper review is ready)"
+
+[imap.backend_patterns]
+stanford = "https?://paperreview\\.ai/review\\?token=([A-Za-z0-9_-]+)"
+```
+
 Matched token for backend `X` is attached to the latest open job for backend `X` without a token.
+When a token is attached from IMAP, ReviewLoop schedules immediate polling (`next_poll_at = now`) so the same daemon tick can retrieve results.
 
 ## Responsible Use (Important)
 
