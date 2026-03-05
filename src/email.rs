@@ -1,6 +1,7 @@
 use crate::{
     config::Config,
     db::Db,
+    model::JobStatus,
     token::{extract_review_token, extract_token_with_pattern},
 };
 use anyhow::Result;
@@ -80,6 +81,25 @@ fn bind_matches(db: &Db, source: &str, matches: Vec<EmailMatch>) -> Result<()> {
         )?;
 
         if let Some(existing_job) = db.find_job_by_token(&matched.token)? {
+            if should_nudge_poll_now(existing_job.status) {
+                db.update_job_state(
+                    &existing_job.id,
+                    JobStatus::Processing,
+                    Some(existing_job.attempt),
+                    Some(Some(Utc::now())),
+                    None,
+                )?;
+                db.add_event(
+                    Some(&existing_job.id),
+                    &format!("{source}_token_nudged_poll"),
+                    serde_json::json!({
+                        "token": matched.token,
+                        "backend": matched.backend,
+                        "source": source
+                    }),
+                )?;
+                continue;
+            }
             db.add_event(
                 Some(&existing_job.id),
                 &format!("{source}_token_already_bound"),
@@ -108,6 +128,16 @@ fn bind_matches(db: &Db, source: &str, matches: Vec<EmailMatch>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn should_nudge_poll_now(status: JobStatus) -> bool {
+    !matches!(
+        status,
+        JobStatus::Completed
+            | JobStatus::Failed
+            | JobStatus::FailedNeedsManual
+            | JobStatus::Timeout
+    )
 }
 
 mod imap_impl {
@@ -504,9 +534,11 @@ pub async fn poll_imap_if_enabled(config: &Config, db: &Db) -> Result<()> {
 mod tests {
     use crate::{
         config::{GmailOauthConfig, ImapConfig},
+        db::Db,
         email::detect_backend_from_header,
+        model::{JobStatus, NewJob},
     };
-    use chrono::{TimeZone, Utc};
+    use chrono::{Duration, TimeZone, Utc};
 
     #[test]
     fn header_match_detects_stanford_sender() {
@@ -565,5 +597,89 @@ mod tests {
         };
         let query = super::gmail_impl::build_unread_query(&cfg);
         assert_eq!(query, "is:unread");
+    }
+
+    #[test]
+    fn existing_processing_token_nudges_poll_to_now() {
+        let db = Db::new_in_memory("email_nudge_poll_now").expect("in-memory db");
+        db.init_schema().expect("init schema");
+
+        let seed = NewJob {
+            paper_id: "paper-a".to_string(),
+            backend: "stanford".to_string(),
+            pdf_path: "paper.pdf".to_string(),
+            pdf_hash: "hash-a".to_string(),
+            status: JobStatus::Queued,
+            email: "user@example.com".to_string(),
+            venue: None,
+            git_tag: None,
+            git_commit: None,
+            next_poll_at: None,
+        };
+        let job = db.create_job(&seed).expect("create job");
+        let far_future = Utc::now() + Duration::hours(1);
+        db.mark_submitted_with_token(&job.id, "tok_existing", far_future)
+            .expect("mark submitted");
+
+        super::bind_matches(
+            &db,
+            "gmail",
+            vec![super::EmailMatch {
+                backend: "stanford".to_string(),
+                token: "tok_existing".to_string(),
+            }],
+        )
+        .expect("bind matches");
+
+        let updated = db.get_job(&job.id).expect("get job").expect("job exists");
+        assert_eq!(updated.status, JobStatus::Processing);
+        let next_poll_at = updated.next_poll_at.expect("next poll exists");
+        assert!(next_poll_at < far_future);
+    }
+
+    #[test]
+    fn terminal_job_token_does_not_nudge_poll() {
+        let db = Db::new_in_memory("email_terminal_no_nudge").expect("in-memory db");
+        db.init_schema().expect("init schema");
+
+        let seed = NewJob {
+            paper_id: "paper-b".to_string(),
+            backend: "stanford".to_string(),
+            pdf_path: "paper.pdf".to_string(),
+            pdf_hash: "hash-b".to_string(),
+            status: JobStatus::Queued,
+            email: "user@example.com".to_string(),
+            venue: None,
+            git_tag: None,
+            git_commit: None,
+            next_poll_at: None,
+        };
+        let job = db.create_job(&seed).expect("create job");
+        let far_future = Utc::now() + Duration::hours(2);
+        db.mark_submitted_with_token(&job.id, "tok_terminal", far_future)
+            .expect("mark submitted");
+        db.update_job_state(
+            &job.id,
+            JobStatus::Completed,
+            Some(3),
+            Some(Some(far_future)),
+            None,
+        )
+        .expect("mark completed");
+
+        super::bind_matches(
+            &db,
+            "gmail",
+            vec![super::EmailMatch {
+                backend: "stanford".to_string(),
+                token: "tok_terminal".to_string(),
+            }],
+        )
+        .expect("bind matches");
+
+        let updated = db.get_job(&job.id).expect("get job").expect("job exists");
+        assert_eq!(updated.status, JobStatus::Completed);
+        assert_eq!(updated.attempt, 3);
+        assert_eq!(updated.next_poll_at, Some(far_future));
     }
 }
