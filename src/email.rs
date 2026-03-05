@@ -1,14 +1,31 @@
 use crate::config::Config;
 use crate::db::Db;
 use anyhow::Result;
+#[cfg(any(feature = "imap-listener", test))]
+use regex::Regex;
+
+#[cfg(any(feature = "imap-listener", test))]
+fn detect_backend_from_header(
+    header_text: &str,
+    config: &crate::config::ImapConfig,
+) -> Option<String> {
+    for (backend, pattern) in &config.backend_header_patterns {
+        if let Ok(re) = Regex::new(pattern)
+            && re.is_match(header_text)
+        {
+            return Some(backend.clone());
+        }
+    }
+    None
+}
 
 #[cfg(feature = "imap-listener")]
 mod imap_impl {
     use crate::{
         config::{Config, ImapConfig},
         db::Db,
+        email::detect_backend_from_header,
         token::{extract_review_token, extract_token_with_pattern},
-        util::compute_next_poll_at,
     };
     use anyhow::{Context, Result};
     use chrono::Utc;
@@ -44,12 +61,8 @@ mod imap_impl {
             )?;
 
             if let Some(job) = db.find_latest_open_job_without_token(&matched.backend)? {
-                let next_poll = compute_next_poll_at(
-                    Utc::now(),
-                    &config.polling.schedule_minutes,
-                    0,
-                    config.polling.jitter_percent,
-                );
+                // IMAP token match should trigger immediate fetch in the same daemon tick.
+                let next_poll = Utc::now();
                 db.attach_token_to_job(&job.id, &matched.token, next_poll)?;
                 db.add_event(
                     Some(&job.id),
@@ -93,18 +106,34 @@ mod imap_impl {
         let mut matches = Vec::new();
 
         for id in &unseen {
+            let backend_hint = if imap_cfg.header_first {
+                fetch_header_text(&mut session, *id)
+                    .and_then(|headers| detect_backend_from_header(&headers, imap_cfg))
+            } else {
+                None
+            };
+
+            if imap_cfg.header_first && backend_hint.is_none() {
+                continue;
+            }
+
             let fetches = session.fetch(id.to_string(), "RFC822")?;
+            let mut matched_for_message: Option<EmailMatch> = None;
             for fetch in &fetches {
                 if let Some(body) = fetch.body() {
                     let text = String::from_utf8_lossy(body);
-                    if let Some(matched) = extract_match(&text, imap_cfg) {
-                        matches.push(matched);
+                    if let Some(matched) = extract_match(&text, imap_cfg, backend_hint.as_deref()) {
+                        matched_for_message = Some(matched);
+                        break;
                     }
                 }
             }
 
-            if imap_cfg.mark_seen {
-                let _ = session.store(id.to_string(), "+FLAGS (\\Seen)");
+            if let Some(matched) = matched_for_message {
+                matches.push(matched);
+                if imap_cfg.mark_seen {
+                    let _ = session.store(id.to_string(), "+FLAGS (\\Seen)");
+                }
             }
         }
 
@@ -112,7 +141,43 @@ mod imap_impl {
         Ok(matches)
     }
 
-    fn extract_match(text: &str, imap_cfg: &ImapConfig) -> Option<EmailMatch> {
+    fn fetch_header_text(
+        session: &mut imap::Session<native_tls::TlsStream<std::net::TcpStream>>,
+        id: u32,
+    ) -> Option<String> {
+        let fetches = session
+            .fetch(id.to_string(), "BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)]")
+            .ok()?;
+        for fetch in &fetches {
+            if let Some(body) = fetch.body() {
+                return Some(String::from_utf8_lossy(body).to_string());
+            }
+        }
+        None
+    }
+
+    fn extract_match(
+        text: &str,
+        imap_cfg: &ImapConfig,
+        backend_hint: Option<&str>,
+    ) -> Option<EmailMatch> {
+        if let Some(backend) = backend_hint {
+            if let Some(pattern) = imap_cfg.backend_patterns.get(backend)
+                && let Some(token) = extract_token_with_pattern(text, pattern)
+            {
+                return Some(EmailMatch {
+                    backend: backend.to_string(),
+                    token,
+                });
+            }
+            if let Some(token) = extract_review_token(text) {
+                return Some(EmailMatch {
+                    backend: backend.to_string(),
+                    token,
+                });
+            }
+        }
+
         for (backend, pattern) in &imap_cfg.backend_patterns {
             if let Some(token) = extract_token_with_pattern(text, pattern) {
                 return Some(EmailMatch {
@@ -138,4 +203,26 @@ pub async fn poll_imap_if_enabled(config: &Config, db: &Db) -> Result<()> {
 #[cfg(not(feature = "imap-listener"))]
 pub async fn poll_imap_if_enabled(_config: &Config, _db: &Db) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::ImapConfig;
+
+    #[test]
+    fn header_match_detects_stanford_sender() {
+        let cfg = ImapConfig::default();
+        let header =
+            "From: Stanford Agentic Reviewer <review@mail.paperreview.ai>\r\nSubject: hello\r\n";
+        let backend = super::detect_backend_from_header(header, &cfg);
+        assert_eq!(backend.as_deref(), Some("stanford"));
+    }
+
+    #[test]
+    fn header_match_returns_none_for_unrelated_mail() {
+        let cfg = ImapConfig::default();
+        let header = "From: notifications@github.com\r\nSubject: PR updated\r\n";
+        let backend = super::detect_backend_from_header(header, &cfg);
+        assert!(backend.is_none());
+    }
 }
