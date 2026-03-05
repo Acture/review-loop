@@ -14,6 +14,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  REVIEWLOOP_GMAIL_CLIENT_ID: ${{ secrets.REVIEWLOOP_GMAIL_CLIENT_ID }}
+  REVIEWLOOP_GMAIL_CLIENT_SECRET: ${{ secrets.REVIEWLOOP_GMAIL_CLIENT_SECRET }}
 
 jobs:
   verify:
