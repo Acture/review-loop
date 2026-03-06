@@ -310,15 +310,16 @@ jobs:
           formula_rel_path="${HOMEBREW_FORMULA_PATH:-Formula/${CRATE_NAME}.rb}"
 
           cd tap
-          if git diff --quiet -- "$formula_rel_path"; then
-            echo "No formula changes detected."
-            exit 0
-          fi
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add "$formula_rel_path"
+
+          if git diff --cached --quiet -- "$formula_rel_path"; then
+            echo "No formula changes detected."
+            exit 0
+          fi
+
           git commit -m "reviewloop ${VERSION}"
 
           default_branch=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
