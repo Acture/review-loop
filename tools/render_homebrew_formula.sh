@@ -46,7 +46,7 @@ class ${formula_class} < Formula
     ENV["OPENSSL_DIR"] = Formula["openssl@3"].opt_prefix if OS.linux?
     ENV["OPENSSL_NO_VENDOR"] = "1" if OS.linux?
 
-    system "cargo", "install", "--locked", *std_cargo_args(path: ".")
+    system "cargo", "install", *std_cargo_args(path: ".")
   end
 
   test do

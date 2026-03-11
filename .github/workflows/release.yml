@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -106,7 +106,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -207,10 +207,10 @@ jobs:
           echo "checksum=${checksum}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout source repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout tap repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ vars.HOMEBREW_TAP_REPO != '' && vars.HOMEBREW_TAP_REPO || 'Acture/homebrew-ac' }}
           token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
@@ -234,7 +234,7 @@ jobs:
 
           grep -Fq "url \"https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG_NAME}.tar.gz\"" "$formula_file"
           grep -Fq "sha256 \"${SOURCE_SHA256}\"" "$formula_file"
-          grep -Fq 'system "cargo", "install", "--locked", *std_cargo_args(path: ".")' "$formula_file"
+          grep -Fq 'system "cargo", "install", *std_cargo_args(path: ".")' "$formula_file"
 
       - name: Commit and push tap update
         env:
